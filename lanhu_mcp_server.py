@@ -18,14 +18,19 @@ from typing import Annotated, Optional, Union, List, Any
 # load_dotenv() 默认不会覆盖已存在的环境变量，所以与 Docker Compose 兼容
 try:
     from dotenv import load_dotenv
-    # 从项目根目录加载 .env 文件（如果存在）
-    # override=False 确保不会覆盖已存在的环境变量（如 Docker Compose 设置的）
-    env_path = Path(__file__).parent / '.env'
-    if env_path.exists():
-        load_dotenv(env_path, override=False)
+    # 先加载通用配置，再加载运行时敏感配置。
+    # override=False 确保不会覆盖已存在的环境变量（如 Docker Compose 设置的）。
+    env_dir = Path(__file__).parent
+    base_env_path = env_dir / '.env'
+    runtime_env_path = env_dir / '.lanhu.runtime.env'
+
+    if base_env_path.exists():
+        load_dotenv(base_env_path, override=False)
     else:
-        # 如果 .env 文件不存在，尝试从当前目录加载（用于本地开发）
         load_dotenv(override=False)
+
+    if runtime_env_path.exists():
+        load_dotenv(runtime_env_path, override=False)
 except ImportError:
     # 如果 python-dotenv 未安装，跳过加载（使用系统环境变量）
     pass
@@ -43,9 +48,17 @@ from bs4 import BeautifulSoup
 from fastmcp import FastMCP
 from fastmcp.utilities.types import Image
 from playwright.async_api import async_playwright
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
 # 创建FastMCP服务器
 mcp = FastMCP("Lanhu Axure Extractor")
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health_check(request: Request) -> JSONResponse:
+    """提供基础健康检查，便于本地联通性验证。"""
+    return JSONResponse({"status": "ok"})
 
 # 全局配置
 DEFAULT_COOKIE = "your_lanhu_cookie_here"  # 请替换为你的蓝湖Cookie，从浏览器开发者工具中获取
@@ -238,13 +251,13 @@ def _merge_padding(styles: dict) -> None:
     pr = styles.get('paddingRight')
     pb = styles.get('paddingBottom')
     pl = styles.get('paddingLeft')
-    
+
     if pt is not None and pr is not None and pb is not None and pl is not None:
         pt_val = pt or 0
         pr_val = pr or 0
         pb_val = pb or 0
         pl_val = pl or 0
-        
+
         if pt_val == pb_val and pl_val == pr_val:
             if pt_val == pl_val:
                 styles['padding'] = f'{pt_val}px'
@@ -252,7 +265,7 @@ def _merge_padding(styles: dict) -> None:
                 styles['padding'] = f'{pt_val}px {pr_val}px'
         else:
             styles['padding'] = f'{pt_val}px {pr_val}px {pb_val}px {pl_val}px'
-        
+
         for k in ['paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft']:
             styles.pop(k, None)
 
@@ -263,13 +276,13 @@ def _merge_margin(styles: dict) -> None:
     mr = styles.get('marginRight')
     mb = styles.get('marginBottom')
     ml = styles.get('marginLeft')
-    
+
     if mt is not None or mr is not None or mb is not None or ml is not None:
         mt_val = mt or 0
         mr_val = mr or 0
         mb_val = mb or 0
         ml_val = ml or 0
-        
+
         if mt_val == 0 and mr_val == 0 and mb_val == 0 and ml_val == 0:
             pass  # 全是0，不输出
         elif mt_val == mb_val and ml_val == mr_val:
@@ -279,7 +292,7 @@ def _merge_margin(styles: dict) -> None:
                 styles['margin'] = f'{mt_val}px {mr_val}px'
         else:
             styles['margin'] = f'{mt_val}px {mr_val}px {mb_val}px {ml_val}px'
-        
+
         for k in ['marginTop', 'marginRight', 'marginBottom', 'marginLeft']:
             styles.pop(k, None)
 
@@ -300,20 +313,20 @@ def _get_flex_classes(node: dict) -> list:
     classes = []
     if not _should_use_flex(node):
         return classes
-    
+
     node_style = node.get('style', {})
     node_props = node.get('props', {})
     node_props_style = node_props.get('style', {})
     style = {**node_style, **node_props_style}
     class_name = node_props.get('className', '')
-    
+
     # Flex方向
     flex_direction = style.get('flexDirection')
     if flex_direction == 'column' or 'flex-col' in class_name:
         classes.append('flex-col')
     elif flex_direction == 'row' or 'flex-row' in class_name:
         classes.append('flex-row')
-    
+
     # 主轴对齐
     justify = node.get('alignJustify', {}).get('justifyContent') or style.get('justifyContent')
     if justify == 'space-between':
@@ -328,7 +341,7 @@ def _get_flex_classes(node: dict) -> list:
         classes.append('justify-around')
     elif justify == 'space-evenly':
         classes.append('justify-evenly')
-    
+
     # 交叉轴对齐
     align = node.get('alignJustify', {}).get('alignItems') or style.get('alignItems')
     if align == 'flex-start':
@@ -337,7 +350,7 @@ def _get_flex_classes(node: dict) -> list:
         classes.append('align-center')
     elif align == 'flex-end':
         classes.append('align-end')
-    
+
     return classes
 
 
@@ -346,43 +359,43 @@ def _clean_styles(node: dict, flex_classes: list) -> dict:
     node_props = node.get('props', {})
     props_style = node_props.get('style', {})
     styles = {}
-    
+
     # 定义被flex类完全覆盖的标准值
     standard_justify = {'flex-start', 'center', 'flex-end', 'space-between', 'space-around', 'space-evenly'}
     standard_align = {'flex-start', 'center', 'flex-end'}
-    
+
     for key, value in props_style.items():
         # 跳过display和flexDirection（由flex-col/flex-row类完全覆盖）
         if key in ('display', 'flexDirection'):
             if flex_classes:
                 continue
-        
+
         # justifyContent: 只跳过标准值
         if key == 'justifyContent' and flex_classes:
             if value in standard_justify:
                 continue
-        
+
         # alignItems: 只跳过标准值
         if key == 'alignItems' and flex_classes:
             if value in standard_align:
                 continue
-        
+
         # 跳过static定位
         if key == 'position' and value == 'static':
             continue
-        
+
         # 跳过visible溢出
         if key == 'overflow' and value == 'visible':
             continue
-        
+
         styles[key] = value
-    
+
     # 合并padding和margin
     if any(k in styles for k in ['paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft']):
         _merge_padding(styles)
     if any(k in styles for k in ['marginTop', 'marginRight', 'marginBottom', 'marginLeft']):
         _merge_margin(styles)
-    
+
     return styles
 
 
@@ -508,18 +521,18 @@ def _generate_html(
 def convert_lanhu_to_html(json_data: dict) -> str:
     """
     将蓝湖设计图JSON转换为HTML+CSS
-    
+
     Args:
         json_data: 蓝湖设计图Schema JSON
-        
+
     Returns:
         完整的HTML字符串（含嵌入式CSS）
     """
     css_rules = {}
-    
+
     # 生成CSS
     _generate_css(json_data, css_rules)
-    
+
     # 组装CSS字符串
     css_parts = []
     for class_name, props in css_rules.items():
@@ -527,13 +540,13 @@ def convert_lanhu_to_html(json_data: dict) -> str:
             css_parts.append(f'.{class_name} {{\n{props}\n}}')
         else:
             css_parts.append(f'.{class_name} {{\n}}')
-    
+
     css_string = '\n\n'.join(css_parts)
     css_string += COMMON_CSS_FOR_DESIGN
-    
+
     # 生成HTML
     body_html = _generate_html(json_data, 4)
-    
+
     html = f'''<!DOCTYPE html>
 <html lang="en">
   <head>
@@ -548,7 +561,7 @@ def convert_lanhu_to_html(json_data: dict) -> str:
 {body_html}
   </body>
 </html>'''
-    
+
     return html
 
 
@@ -1573,28 +1586,28 @@ def _localize_image_urls(html_code: str, design_name: str) -> tuple[str, dict]:
 def normalize_role(role: str) -> str:
     """
     将用户角色归一化到标准角色组
-    
+
     Args:
         role: 用户原始角色名（如 "php后端"、"iOS开发"）
-    
+
     Returns:
         标准角色名（如 "后端"、"客户端"）
     """
     if not role:
         return "未知"
-    
+
     role_lower = role.lower()
-    
+
     # 如果已经是标准角色，直接返回
     if role in VALID_ROLES:
         return role
-    
+
     # 按规则匹配
     for keywords, standard_role in ROLE_MAPPING_RULES:
         for keyword in keywords:
             if keyword.lower() in role_lower:
                 return standard_role
-    
+
     # 无法匹配，返回原值
     return role
 
@@ -1609,17 +1622,17 @@ def _get_metadata_cache_key(project_id: str, doc_id: str = None) -> str:
 def _get_cached_metadata(cache_key: str, version_id: str = None) -> Optional[dict]:
     """
     获取缓存的元数据
-    
+
     Args:
         cache_key: 缓存键
         version_id: 文档版本ID，如果提供则检查版本是否匹配
-    
+
     Returns:
         缓存的元数据，如果未命中或版本不匹配则返回None
     """
     if cache_key in _metadata_cache:
         cache_entry = _metadata_cache[cache_key]
-        
+
         # 如果提供了version_id，检查版本是否匹配
         if version_id:
             if cache_entry.get('version_id') == version_id:
@@ -1628,17 +1641,17 @@ def _get_cached_metadata(cache_key: str, version_id: str = None) -> Optional[dic
                 # 版本不匹配，删除旧缓存
                 del _metadata_cache[cache_key]
                 return None
-        
+
         # 没有version_id，直接返回缓存（用于项目级别缓存）
         return cache_entry['data']
-    
+
     return None
 
 
 def _set_cached_metadata(cache_key: str, metadata: dict, version_id: str = None):
     """
     设置缓存（基于版本号的永久缓存）
-    
+
     Args:
         cache_key: 缓存键
         metadata: 元数据
@@ -1667,7 +1680,7 @@ async def send_feishu_notification(
 ) -> bool:
     """
     发送飞书机器人通知
-    
+
     Args:
         summary: 留言标题
         content: 留言内容
@@ -1678,13 +1691,13 @@ async def send_feishu_notification(
         project_name: 项目名称
         doc_name: 文档名称
         doc_url: 文档链接
-    
+
     Returns:
         bool: 发送成功返回True，失败返回False
     """
     if not mentions:
         return False  # 没有@任何人，不发送通知
-    
+
     # 消息类型emoji映射
     type_emoji = {
         "normal": "📢",
@@ -1693,9 +1706,9 @@ async def send_feishu_notification(
         "urgent": "🚨",
         "knowledge": "💡"
     }
-    
+
     emoji = type_emoji.get(message_type, "📝")
-    
+
     # 构建飞书@用户信息
     at_user_ids = []
     mention_names = []
@@ -1704,7 +1717,7 @@ async def send_feishu_notification(
         if user_id:
             at_user_ids.append(user_id)
             mention_names.append(name)
-    
+
     # 递归提取纯文本内容
     def extract_text(obj):
         """递归提取JSON中的纯文本"""
@@ -1729,13 +1742,13 @@ async def send_feishu_notification(
             return ""
         else:
             return str(obj) if obj else ""
-    
+
     plain_content = extract_text(content)
-    
+
     # 限制内容长度
     if len(plain_content) > 500:
         plain_content = plain_content[:500] + "..."
-    
+
     # 构建富文本内容（使用飞书post格式支持@功能）
     content_list = [
         # 发布者信息
@@ -1743,7 +1756,7 @@ async def send_feishu_notification(
         # 类型
         [{"tag": "text", "text": f"🏷️ 类型：{message_type}\n"}],
     ]
-    
+
     # @提醒行（如果有@的人）
     if at_user_ids:
         mention_line = [{"tag": "text", "text": "📨 提醒："}]
@@ -1752,23 +1765,23 @@ async def send_feishu_notification(
             mention_line.append({"tag": "text", "text": " "})
         mention_line.append({"tag": "text", "text": "\n"})
         content_list.append(mention_line)
-    
+
     # 项目信息
     if project_name:
         content_list.append([{"tag": "text", "text": f"📁 项目：{project_name}\n"}])
     if doc_name:
         content_list.append([{"tag": "text", "text": f"📄 文档：{doc_name}\n"}])
-    
+
     # 内容
     content_list.append([{"tag": "text", "text": f"\n📝 内容：\n{plain_content}\n"}])
-    
+
     # 链接
     if doc_url:
         content_list.append([
             {"tag": "text", "text": "\n🔗 "},
             {"tag": "a", "text": "查看需求文档", "href": doc_url}
         ])
-    
+
     # 飞书消息payload（使用富文本post格式）
     payload = {
         "msg_type": "post",
@@ -1781,7 +1794,7 @@ async def send_feishu_notification(
             }
         }
     }
-    
+
     try:
         async with httpx.AsyncClient(timeout=HTTP_TIMEOUT) as client:
             response = await client.post(
@@ -1789,9 +1802,9 @@ async def send_feishu_notification(
                 json=payload,
                 headers={"Content-Type": "application/json"}
             )
-            
+
             result = response.json()
-            
+
             # 飞书成功响应: {"code":0,"msg":"success"}
             if result.get("code") == 0:
                 if mention_names:
@@ -1802,7 +1815,7 @@ async def send_feishu_notification(
             else:
                 print(f"⚠️ 飞书通知发送失败: {result}")
                 return False
-                
+
     except Exception as e:
         print(f"❌ 飞书通知发送异常: {e}")
         return False
@@ -1814,18 +1827,18 @@ async def send_feishu_notification(
 
 class MessageStore:
     """消息存储管理类 - 支持团队留言板功能"""
-    
+
     def __init__(self, project_id: str = None):
         """
         初始化消息存储
-        
+
         Args:
             project_id: 项目ID，如果为None则用于全局操作模式
         """
         self.project_id = project_id
         self.storage_dir = DATA_DIR / "messages"
         self.storage_dir.mkdir(parents=True, exist_ok=True)
-        
+
         if project_id:
             self.file_path = self.storage_dir / f"{project_id}.json"
             self._data = self._load()
@@ -1833,7 +1846,7 @@ class MessageStore:
             # 全局模式，不加载单个文件
             self.file_path = None
             self._data = None
-    
+
     def _load(self) -> dict:
         """加载项目数据"""
         if self.file_path.exists():
@@ -1848,51 +1861,51 @@ class MessageStore:
             "messages": [],
             "collaborators": []
         }
-    
+
     def _save(self):
         """保存项目数据"""
         with open(self.file_path, 'w', encoding='utf-8') as f:
             json.dump(self._data, f, ensure_ascii=False, indent=2)
-    
+
     def _get_now(self) -> str:
         """获取当前时间字符串（东八区/北京时间）"""
         return datetime.now(CHINA_TZ).strftime("%Y-%m-%d %H:%M:%S")
-    
+
     def _check_mentions_me(self, mentions: List[str], user_role: str) -> bool:
         """检查消息是否@了当前用户（支持角色归一化匹配）"""
         if not mentions:
             return False
         if "所有人" in mentions:
             return True
-        
+
         # 将用户角色归一化后匹配
         normalized_user_role = normalize_role(user_role)
-        
+
         # 直接匹配原始角色
         if user_role in mentions:
             return True
-        
+
         # 匹配归一化后的角色
         if normalized_user_role in mentions:
             return True
-        
+
         return False
-    
+
     def record_collaborator(self, name: str, role: str):
         """记录/更新协作者"""
         if not name or not role:
             return
-        
+
         now = self._get_now()
         collaborators = self._data.get("collaborators", [])
-        
+
         # 查找是否已存在
         for collab in collaborators:
             if collab["name"] == name and collab["role"] == role:
                 collab["last_seen"] = now
                 self._save()
                 return
-        
+
         # 新增协作者
         collaborators.append({
             "name": name,
@@ -1902,12 +1915,12 @@ class MessageStore:
         })
         self._data["collaborators"] = collaborators
         self._save()
-    
+
     def get_collaborators(self) -> List[dict]:
         """获取协作者列表"""
         return self._data.get("collaborators", [])
-    
-    def save_message(self, summary: str, content: str, author_name: str, 
+
+    def save_message(self, summary: str, content: str, author_name: str,
                      author_role: str, mentions: List[str] = None,
                      message_type: str = 'normal',
                      project_name: str = None, folder_name: str = None,
@@ -1916,7 +1929,7 @@ class MessageStore:
                      doc_updated_at: str = None, doc_url: str = None) -> dict:
         """
         保存新消息（包含标准元数据）
-        
+
         Args:
             summary: 消息概要
             content: 消息内容
@@ -1935,7 +1948,7 @@ class MessageStore:
         """
         msg_id = self._data["next_id"]
         self._data["next_id"] += 1
-        
+
         now = self._get_now()
         message = {
             "id": msg_id,
@@ -1949,7 +1962,7 @@ class MessageStore:
             "updated_at": None,
             "updated_by_name": None,
             "updated_by_role": None,
-            
+
             # 标准元数据（10个字段）
             "project_id": self.project_id,
             "project_name": project_name,
@@ -1961,11 +1974,11 @@ class MessageStore:
             "doc_updated_at": doc_updated_at,
             "doc_url": doc_url
         }
-        
+
         self._data["messages"].append(message)
         self._save()
         return message
-    
+
     def get_messages(self, user_role: str = None) -> List[dict]:
         """获取所有消息（不含content，用于列表展示）"""
         messages = []
@@ -1977,7 +1990,7 @@ class MessageStore:
         # 按创建时间倒序排列
         messages.sort(key=lambda x: x.get("created_at", ""), reverse=True)
         return messages
-    
+
     def get_message_by_id(self, msg_id: int, user_role: str = None) -> Optional[dict]:
         """根据ID获取消息（含content）"""
         for msg in self._data.get("messages", []):
@@ -1987,9 +2000,9 @@ class MessageStore:
                     msg_copy["mentions_me"] = self._check_mentions_me(msg.get("mentions", []), user_role)
                 return msg_copy
         return None
-    
+
     def update_message(self, msg_id: int, editor_name: str, editor_role: str,
-                       summary: str = None, content: str = None, 
+                       summary: str = None, content: str = None,
                        mentions: List[str] = None) -> Optional[dict]:
         """更新消息"""
         for msg in self._data.get("messages", []):
@@ -2006,7 +2019,7 @@ class MessageStore:
                 self._save()
                 return msg
         return None
-    
+
     def delete_message(self, msg_id: int) -> bool:
         """删除消息"""
         messages = self._data.get("messages", [])
@@ -2016,73 +2029,73 @@ class MessageStore:
                 self._save()
                 return True
         return False
-    
+
     def get_all_messages(self, user_role: str = None) -> List[dict]:
         """
         获取所有项目的留言（全局查询）
-        
+
         Args:
             user_role: 用户角色，用于判断是否@了该用户
-        
+
         Returns:
             包含所有项目消息的列表（已排序）
         """
         all_messages = []
-        
+
         # 遍历所有JSON文件
         for json_file in self.storage_dir.glob("*.json"):
             project_id = json_file.stem
             try:
                 project_store = MessageStore(project_id)
                 messages = project_store.get_messages(user_role=user_role)
-                
+
                 # 消息中已包含元数据，直接添加
                 all_messages.extend(messages)
             except Exception:
                 # 某个项目加载失败不影响其他项目
                 continue
-        
+
         # 全局排序（按创建时间倒序）
         all_messages.sort(key=lambda x: x.get("created_at", ""), reverse=True)
         return all_messages
-    
+
     def get_all_messages_grouped(self, user_role: str = None, user_name: str = None) -> List[dict]:
         """
         获取所有项目的留言（分组返回，节省token）
-        
+
         按项目+文档分组，每组的元数据只出现一次，避免重复
-        
+
         Args:
             user_role: 用户角色，用于判断是否@了该用户
             user_name: 用户名，用于判断消息是否是自己发的
-        
+
         Returns:
             分组列表，每组包含元数据和该组的消息
         """
         # 先获取所有消息
         all_messages = self.get_all_messages(user_role)
-        
+
         # 按 (project_id, doc_id) 分组
         from collections import defaultdict
         groups_dict = defaultdict(list)
-        
+
         for msg in all_messages:
             # 生成分组键
             project_id = msg.get('project_id', 'unknown')
             doc_id = msg.get('doc_id', 'no_doc')
             group_key = f"{project_id}_{doc_id}"
-            
+
             groups_dict[group_key].append(msg)
-        
+
         # 构建分组结果
         groups = []
         for group_key, messages in groups_dict.items():
             if not messages:
                 continue
-            
+
             # 从第一条消息中提取元数据（组内共享）
             first_msg = messages[0]
-            
+
             # 构建组信息
             group = {
                 # 元数据（只出现一次）
@@ -2095,37 +2108,37 @@ class MessageStore:
                 "doc_version": first_msg.get('doc_version'),
                 "doc_updated_at": first_msg.get('doc_updated_at'),
                 "doc_url": first_msg.get('doc_url'),
-                
+
                 # 统计信息
                 "message_count": len(messages),
                 "mentions_me_count": sum(1 for m in messages if m.get("mentions_me")),
-                
+
                 # 消息列表（移除元数据字段）
                 "messages": []
             }
-            
+
             # 移除消息中的元数据字段，只保留核心信息
             meta_fields = {
                 'project_id', 'project_name', 'folder_name',
                 'doc_id', 'doc_name', 'doc_type', 'doc_version',
                 'doc_updated_at', 'doc_url'
             }
-            
+
             for msg in messages:
                 # 创建精简消息（不含元数据）
                 slim_msg = {k: v for k, v in msg.items() if k not in meta_fields}
                 # 清理null字段并添加is_edited/is_mine标志
                 slim_msg = _clean_message_dict(slim_msg, user_name)
                 group["messages"].append(slim_msg)
-            
+
             groups.append(group)
-        
+
         # 按组内最新消息时间排序
         groups.sort(
             key=lambda g: max((m.get('created_at', '') for m in g['messages']), default=''),
             reverse=True
         )
-        
+
         return groups
 
 
@@ -2133,14 +2146,14 @@ class MessageStore:
 def get_user_info(ctx: Context) -> tuple:
     """
     从URL query参数获取用户信息
-    
+
     MCP连接URL格式：http://xxx:port/mcp?role=后端&name=张三
     """
     try:
         # 使用 FastMCP 提供的 get_http_request 获取当前请求
         from fastmcp.server.dependencies import get_http_request
         req = get_http_request()
-        
+
         # 从 query 参数获取
         name = req.query_params.get('name', '匿名')
         role = req.query_params.get('role', '未知')
@@ -2153,14 +2166,14 @@ def get_user_info(ctx: Context) -> tuple:
 def _clean_message_dict(msg: dict, current_user_name: str = None) -> dict:
     """
     清理消息字典，移除null值的更新字段，并添加快捷标志
-    
+
     优化：
     1. 如果消息未被编辑，省略 updated_at/updated_by_name/updated_by_role
     2. 添加 is_edited 标志
     3. 添加 is_mine 标志（如果提供了current_user_name）
     """
     cleaned = msg.copy()
-    
+
     # 如果消息未被编辑，省略这些字段
     if cleaned.get('updated_at') is None:
         cleaned.pop('updated_at', None)
@@ -2169,11 +2182,11 @@ def _clean_message_dict(msg: dict, current_user_name: str = None) -> dict:
         cleaned['is_edited'] = False
     else:
         cleaned['is_edited'] = True
-    
+
     # 添加is_mine标志
     if current_user_name:
         cleaned['is_mine'] = (cleaned.get('author_name') == current_user_name)
-    
+
     return cleaned
 
 
@@ -2189,10 +2202,10 @@ def get_project_id_from_url(url: str) -> str:
 async def _fetch_metadata_from_url(url: str) -> dict:
     """
     从蓝湖URL获取标准元数据（10个字段）- 支持基于版本号的永久缓存
-    
+
     Args:
         url: 蓝湖URL
-    
+
     Returns:
         包含10个元数据字段的字典，获取失败的字段为None
     """
@@ -2207,43 +2220,43 @@ async def _fetch_metadata_from_url(url: str) -> dict:
         'doc_updated_at': None,
         'doc_url': None
     }
-    
+
     extractor = LanhuExtractor()
     try:
         params = extractor.parse_url(url)
         project_id = params.get('project_id')
         doc_id = params.get('doc_id')
         team_id = params.get('team_id')
-        
+
         metadata['project_id'] = project_id
         metadata['doc_id'] = doc_id
-        
+
         if not project_id:
             return metadata
-        
+
         # 生成缓存键
         cache_key = _get_metadata_cache_key(project_id, doc_id)
-        
+
         # 如果有doc_id，获取文档信息和版本号
         version_id = None
         if doc_id:
             doc_info = await extractor.get_document_info(project_id, doc_id)
-            
+
             # 获取版本ID
             versions = doc_info.get('versions', [])
             if versions:
                 version_id = versions[0].get('id')
                 metadata['doc_version'] = versions[0].get('version_info')
-            
+
             # 检查缓存（基于版本号）
             cached = _get_cached_metadata(cache_key, version_id)
             if cached:
                 return cached
-            
+
             # 缓存未命中，继续获取数据
             metadata['doc_name'] = doc_info.get('name')
             metadata['doc_type'] = doc_info.get('type', 'axure')
-            
+
             # 格式化更新时间
             update_time = doc_info.get('update_time')
             if update_time:
@@ -2253,14 +2266,14 @@ async def _fetch_metadata_from_url(url: str) -> dict:
                     metadata['doc_updated_at'] = dt_china.strftime('%Y-%m-%d %H:%M:%S')
                 except Exception:
                     metadata['doc_updated_at'] = update_time
-            
+
             # 构建文档URL
             if team_id and project_id and doc_id:
                 metadata['doc_url'] = (
                     f"https://lanhuapp.com/web/#/item/project/product"
                     f"?tid={team_id}&pid={project_id}&docId={doc_id}"
                 )
-        
+
         # 获取项目信息
         if project_id and team_id:
             try:
@@ -2280,15 +2293,15 @@ async def _fetch_metadata_from_url(url: str) -> dict:
                         metadata['folder_name'] = project_info.get('folder_name')
             except Exception:
                 pass
-        
+
         # 存入缓存（基于版本号）
         _set_cached_metadata(cache_key, metadata, version_id)
-    
+
     except Exception:
         pass
     finally:
         await extractor.close()
-    
+
     return metadata
 
 
@@ -2524,12 +2537,12 @@ class LanhuExtractor:
         def extract_pages(nodes, pages_list, parent_path="", level=0, parent_folder=None):
             """
             递归提取页面，保留层级信息
-            
+
             根据真实蓝湖sitemap结构：
             - 纯文件夹：type="Folder" 且 url=""
             - 页面节点：有url字段（type="Wireframe"等）
             - 页面可以有children（子页面）
-            
+
             Args:
                 nodes: 当前层级的节点列表
                 pages_list: 输出的页面列表
@@ -2542,13 +2555,13 @@ class LanhuExtractor:
                 url = node.get('url', '')
                 node_type = node.get('type', 'Wireframe')
                 node_id = node.get('id', '')
-                
+
                 # 构建当前路径
                 current_path = f"{parent_path}/{page_name}" if parent_path else page_name
-                
+
                 # 判断是否为纯文件夹（type=Folder 且 无url）
                 is_pure_folder = (node_type == 'Folder' and not url)
-                
+
                 if page_name and url:
                     # 这是一个页面（有url的都是页面）
                     pages_list.append({
@@ -2562,17 +2575,17 @@ class LanhuExtractor:
                         'path': current_path,  # 完整路径
                         'has_children': bool(node.get('children'))  # 是否有子页面
                     })
-                
+
                 # 递归处理子节点
                 children = node.get('children', [])
                 if children:
                     # 如果当前是纯文件夹，更新parent_folder
                     # 如果当前是页面，保持原parent_folder
                     next_folder = page_name if is_pure_folder else parent_folder
-                    
+
                     extract_pages(
-                        children, 
-                        pages_list, 
+                        children,
+                        pages_list,
                         parent_path=current_path,
                         level=level + 1,
                         parent_folder=next_folder
@@ -2598,14 +2611,14 @@ class LanhuExtractor:
         folder_stats = defaultdict(int)
         max_level = 0
         pages_with_children = 0
-        
+
         for page in pages_list:
             folder = page.get('folder', '根目录')
             folder_stats[folder] += 1
             max_level = max(max_level, page.get('level', 0))
             if page.get('has_children'):
                 pages_with_children += 1
-        
+
         # 构建返回结果
         result = {
             'document_id': params['doc_id'],
@@ -3493,7 +3506,7 @@ async def screenshot_page_internal(resource_dir: str, page_names: List[str], out
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    
+
     # 缓存元数据文件
     cache_meta_path = output_path / ".screenshot_cache.json"
     cache_meta = {}
@@ -3503,20 +3516,20 @@ async def screenshot_page_internal(resource_dir: str, page_names: List[str], out
                 cache_meta = json.load(f)
         except Exception:
             cache_meta = {}
-    
+
     # 检查哪些页面需要重新截图
     cached_version = cache_meta.get('version_id')
     pages_to_render = []
     cached_results = []
-    
+
     for page_name in page_names:
         safe_name = re.sub(r'[^\w\s-]', '_', page_name)
         screenshot_file = output_path / f"{safe_name}.png"
         text_file = output_path / f"{safe_name}.txt"
         styles_file = output_path / f"{safe_name}_styles.json"
-        
+
         # 如果版本相同且文件存在，复用缓存
-        if (version_id and cached_version == version_id and 
+        if (version_id and cached_version == version_id and
             screenshot_file.exists()):
             # 读取缓存的文本内容
             page_text = ""
@@ -3525,7 +3538,7 @@ async def screenshot_page_internal(resource_dir: str, page_names: List[str], out
                     page_text = text_file.read_text(encoding='utf-8')
                 except Exception:
                     page_text = "(Cached - text not available)"
-            
+
             # 读取缓存的样式信息
             page_design_info = None
             if styles_file.exists():
@@ -3534,7 +3547,7 @@ async def screenshot_page_internal(resource_dir: str, page_names: List[str], out
                         page_design_info = json.load(sf)
                 except Exception:
                     pass
-            
+
             cached_results.append({
                 'page_name': page_name,
                 'success': True,
@@ -3546,13 +3559,13 @@ async def screenshot_page_internal(resource_dir: str, page_names: List[str], out
             })
         else:
             pages_to_render.append(page_name)
-    
+
     results = list(cached_results)
-    
+
     # 如果所有页面都有缓存，直接返回
     if not pages_to_render:
         return results
-    
+
     # 启动HTTP服务器（只有需要渲染时才启动）
     import random
     port = random.randint(8800, 8900)
@@ -3602,7 +3615,7 @@ async def screenshot_page_internal(resource_dir: str, page_names: List[str], out
                         const color = style.color;
                         // Detect red text (rgb(255,0,0) or #ff0000, etc.)
                         return color && (
-                            color.includes('rgb(255, 0, 0)') || 
+                            color.includes('rgb(255, 0, 0)') ||
                             color.includes('rgb(255,0,0)') ||
                             color === 'red'
                         );
@@ -3717,7 +3730,7 @@ async def screenshot_page_internal(resource_dir: str, page_names: List[str], out
 
                 # 保存截图到文件
                 screenshot_path.write_bytes(screenshot_bytes)
-                
+
                 # 保存文本到文件（用于缓存）
                 try:
                     text_path.write_text(page_text, encoding='utf-8')
@@ -3759,7 +3772,7 @@ async def screenshot_page_internal(resource_dir: str, page_names: List[str], out
     # 停止服务器
     httpd.shutdown()
     httpd.server_close()
-    
+
     # 更新缓存元数据
     if version_id:
         cache_meta['version_id'] = version_id
@@ -3779,11 +3792,11 @@ async def lanhu_resolve_invite_link(
 ) -> dict:
     """
     Resolve Lanhu invite/share link to actual project URL
-    
+
     USE THIS WHEN: User provides invite link (lanhuapp.com/link/#/invite?sid=xxx)
-    
+
     Purpose: Convert invite link to usable project URL with tid/pid/docId parameters
-    
+
     Returns:
         Resolved URL and parsed parameters
     """
@@ -3799,34 +3812,34 @@ async def lanhu_resolve_invite_link(
                     'domain': '.lanhuapp.com',
                     'path': '/'
                 })
-        
+
         # 使用playwright来处理前端重定向
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             context = await browser.new_context()
-            
+
             # 添加cookies
             if cookies:
                 await context.add_cookies(cookies)
-            
+
             page = await context.new_page()
-            
+
             # 访问邀请链接，等待重定向完成
             await page.goto(invite_url, wait_until='networkidle', timeout=30000)
-            
+
             # 等待一下确保重定向完成
             await page.wait_for_timeout(2000)
-            
+
             # 获取最终URL
             final_url = page.url
-            
+
             await browser.close()
-            
+
             # 解析最终URL
             extractor = LanhuExtractor()
             try:
                 params = extractor.parse_url(final_url)
-                
+
                 return {
                     "status": "success",
                     "invite_url": invite_url,
@@ -3844,7 +3857,7 @@ async def lanhu_resolve_invite_link(
                 }
             finally:
                 await extractor.close()
-                
+
     except Exception as e:
         return {
             "status": "error",
@@ -3857,16 +3870,16 @@ async def lanhu_resolve_invite_link(
 def _get_analysis_mode_options_by_role(user_role: str) -> str:
     """
     根据用户角色生成分析模式选项（调整推荐顺序）
-    
+
     Args:
         user_role: 用户角色
-    
+
     Returns:
         格式化的选项文本
     """
     # 归一化角色
     normalized_role = normalize_role(user_role)
-    
+
     # 定义三种模式的完整描述
     developer_option = """1️⃣ 【开发视角】- 详细技术文档
    适合：开发人员看需求，准备写代码
@@ -3875,7 +3888,7 @@ def _get_analysis_mode_options_by_role(user_role: str) -> str:
    - 业务规则清单（判断条件、异常处理、数据流向）
    - 全局流程图（包含所有分支、判断、异常处理）
    - 接口依赖说明、数据库设计建议"""
-    
+
     tester_option = """2️⃣ 【测试视角】- 测试用例和验证点
    适合：测试人员写测试用例
    输出内容：
@@ -3883,7 +3896,7 @@ def _get_analysis_mode_options_by_role(user_role: str) -> str:
    - 异常测试场景（边界值、异常情况、错误提示）
    - 字段校验规则表（含测试边界值）
    - 状态变化测试点、联调测试清单"""
-    
+
     explorer_option = """3️⃣ 【快速探索】- 全局评审视角
    适合：需求评审会议、快速了解需求
    输出内容：
@@ -3891,7 +3904,7 @@ def _get_analysis_mode_options_by_role(user_role: str) -> str:
    - 模块依赖关系图、数据流向图
    - 开发顺序建议、风险点识别
    - 前后端分工参考"""
-    
+
     # 判断角色类型，调整推荐顺序
     # 开发相关角色：后端、前端、客户端、开发
     if normalized_role in ["后端", "前端", "客户端", "开发"]:
@@ -3903,7 +3916,7 @@ def _get_analysis_mode_options_by_role(user_role: str) -> str:
 
 {explorer_option}
 """
-    
+
     # 测试相关角色（检查原始角色名是否包含"测试"）
     elif "测试" in user_role or "test" in user_role.lower() or "qa" in user_role.lower():
         # 测试视角排第一
@@ -3914,7 +3927,7 @@ def _get_analysis_mode_options_by_role(user_role: str) -> str:
 
 {explorer_option}
 """
-    
+
     # 其他角色：产品、项目经理、运维等
     else:
         # 快速探索排第一
@@ -3934,12 +3947,12 @@ async def lanhu_get_pages(
 ) -> dict:
     """
     [PRD/Requirement Document] Get page list of Lanhu Axure prototype - CALL THIS FIRST before analyzing
-    
+
     USE THIS WHEN user says: 需求文档, 需求, PRD, 产品文档, 原型, 交互稿, Axure, 看看需求, 帮我看需求, 需求分析
     DO NOT USE for: UI设计图, 设计稿, 视觉设计, 切图 (use lanhu_get_designs instead)
-    
+
     Purpose: Get page list of PRD/requirement/prototype document. Must call this BEFORE lanhu_get_ai_analyze_page_result.
-    
+
     Returns:
         Page list and document metadata
     """
@@ -3951,12 +3964,12 @@ async def lanhu_get_pages(
         if project_id:
             store = MessageStore(project_id)
             store.record_collaborator(user_name, user_role)
-        
+
         result = await extractor.get_pages_list(url)
-        
+
         # 根据用户角色生成推荐的分析模式选项
         mode_options = _get_analysis_mode_options_by_role(user_role)
-        
+
         # Add AI behavioral instruction - this will be shown to AI as part of tool result
         ai_instruction_template = """
 === BEHAVIORAL DIRECTIVE FOR AI ASSISTANT ===
@@ -4052,20 +4065,20 @@ todo_write(merge=false, todos=[
    ⚠️ 用户必须选择分析模式，否则不能继续！
    ```
    全部页面已浏览完毕。
-   
+
    📊 发现以下模块：
    [列出分组表格，标注每组页面数]
-   
+
    请选择分析角度：
    {MODE_OPTIONS_PLACEHOLDER}
-   
+
    也可以自定义需求，比如"简单看看"、"只看数据流向"等。
-   
+
    ⚠️ 请告知您的选择和要分析的模块，以便继续分析工作。
    ```
-   
+
    ⚠️ 等待用户回复后，标记confirm_mode为completed，记住用户选择的analysis_mode，再执行步骤7
-   
+
 7. **⚡反向更新TODOs**（关键步骤）：
    根据用户选择的分析模式更新TODO描述：
 ```
@@ -4090,22 +4103,22 @@ todo_write(merge=true, todos=[
 
 3. **根据分析模式输出不同内容**：
    工具返回会包含对应模式的 prompt 指引，按照指引输出即可。
-   
+
    三种模式的核心区别：
-   
+
    【开发视角】提取所有细节，供开发写代码：
    - 功能清单表（功能、输入、输出、规则、异常）
    - 字段规则表（必填、类型、长度、校验、提示）
    - 全局关联（数据依赖、输出、跳转）
    - AI理解与建议（对不清晰的地方）
-   
+
    【测试视角】提取测试场景，供测试写用例：
    - 正向场景（前置条件→步骤→期望结果）
    - 异常场景（触发条件→期望结果）
    - 字段校验规则表（含测试边界值）
    - 状态变化表
    - 联调测试点
-   
+
    【快速探索】提取核心功能，供需求评审：
    - 模块核心功能（3-5个点，一句话描述）
    - 依赖关系识别
@@ -4126,24 +4139,24 @@ todo_write(merge=true, todos=[
 【STAGE 3: 反向验证 - 确保零遗漏】
 1. 标记stage3为in_progress
 2. **汇总STAGE2所有结果，根据分析模式验证不同内容**：
-   
+
    【开发视角】验证：
    - 功能点是否完整？字段是否齐全？
    - 业务规则是否清晰？异常处理是否覆盖？
-   
+
    【测试视角】验证：
    - 测试场景是否覆盖核心功能？
    - 异常场景是否完整？边界值是否标注？
-   
+
    【快速探索】验证：
    - 模块划分是否合理？依赖关系是否清晰？
    - 变更类型是否都已识别？
-   
+
 3. **汇总变更类型统计**（所有模式都要）：
    - 🆕 全新功能：X个模块
    - 🔄 功能修改：Y个模块
    - ❓ 未明确：Z个模块（列出需确认）
-   
+
 4. 生成"待确认清单"（汇总所有⚠️的项）
 5. 标记stage3为completed
 
@@ -4154,56 +4167,56 @@ todo_write(merge=true, todos=[
    【开发视角】输出：详细需求文档 + 全局流程图
    ```
    # 需求文档总结
-   
+
    ## 📊 文档概览
    - 总页面数、模块数、变更类型统计、待确认项数
-   
+
    ## 🎯 需求性质分析
    - 新增/修改统计表 + 判断依据
-   
+
    ## 🌍 全局业务流程图（⚡核心交付物）
    - 包含所有模块的完整细节
    - 所有判断条件、分支、异常处理
    - 用文字流程图（Vertical Flow Diagram）
-   
+
    ## 模块X：XXX模块
    ### 功能清单（表格）
    ### 字段规则（表格）
    ### 模块总结
-   
+
    ## ⚠️ 待确认事项
    ```
-   
+
    【测试视角】输出：测试计划文档
    ```
    # 测试计划文档
-   
+
    ## 📊 测试概览
    - 模块数、测试场景数（正向X个，异常Y个）
    - 变更类型统计（🆕全量测试 / 🔄回归测试）
-   
+
    ## 🎯 需求性质分析（影响测试范围）
-   
+
    ## 测试用例清单（按模块）
    ### 模块X：XXX
    #### 正向场景（P0）
    #### 异常场景（P1）
    #### 字段校验表
-   
+
    ## 📋 测试数据准备清单
    ## 🔄 回归测试提示
    ## ❓ 测试疑问汇总
    ```
-   
+
    【快速探索】输出：需求评审文档（像PPT）
    ```
    # 需求评审 - XXX功能
-   
+
    ## 📊 文档概览（1分钟了解全局）
    ## 🎯 需求性质分析（新增/修改统计 + 判断依据）
    ## 📦 模块清单表
    | 序号 | 模块名 | 变更类型 | 核心功能点 | 依赖模块 | 页面数 |
-   
+
    ## 🔄 数据流向图（展示模块间依赖关系）
    ## 📅 开发顺序建议（基于依赖关系）
    ## 🔗 关键依赖关系说明
@@ -4212,14 +4225,14 @@ todo_write(merge=true, todos=[
    ## 📋 评审会讨论要点
    ## ✅ 评审后行动项
    ```
-   
+
 3. **输出完成提示**（根据分析模式调整话术）：
    【开发视角】
    "详细需求文档已整理完毕，可供开发参考。"
-   
+
    【测试视角】
    "测试计划已整理完毕，可供测试团队使用。"
-   
+
    【快速探索】
    "需求评审文档已整理完毕，可用于评审会议。"
 
@@ -4253,10 +4266,10 @@ todo_write(merge=true, todos=[
     - Prefer Vertical Flow Diagram (plain text) for flowcharts
 === END OF DIRECTIVE - NOW RESPOND AS ERGOU IN CHINESE ===
 """
-        
+
         # 替换占位符并设置最终的指令
         result['__AI_INSTRUCTION__'] = ai_instruction_template.replace('{MODE_OPTIONS_PLACEHOLDER}', mode_options)
-        
+
         # Add AI suggestion when there are many pages (>10)
         total_pages = result.get('total_pages', 0)
         if total_pages > 10:
@@ -4275,7 +4288,7 @@ todo_write(merge=true, todos=[
                 'next_action': 'Call lanhu_get_ai_analyze_page_result(page_names="all", mode="text_only") for STAGE 1',
                 'language_note': 'Respond in Chinese when talking to user'
             }
-        
+
         return result
     finally:
         await extractor.close()
@@ -4523,10 +4536,10 @@ def _get_stage4_prompt_explorer() -> str:
 def _get_analysis_mode_prompt(analysis_mode: str) -> dict:
     """
     根据分析模式获取对应的 prompt
-    
+
     Args:
         analysis_mode: 分析模式 (developer/tester/explorer)
-    
+
     Returns:
         包含 stage2_prompt 和 stage4_prompt 的字典
     """
@@ -4563,28 +4576,28 @@ async def lanhu_get_ai_analyze_page_result(
 ) -> List[Union[str, Image]]:
     """
     [PRD/Requirement Document] Analyze Lanhu Axure prototype pages - GET VISUAL CONTENT
-    
+
     USE THIS WHEN user says: 需求文档, 需求, PRD, 产品文档, 原型, 交互稿, Axure, 看看需求, 帮我看需求, 分析需求, 需求分析
     DO NOT USE for: UI设计图, 设计稿, 视觉设计, 切图 (use lanhu_get_ai_analyze_design_result instead)
-    
+
     FOUR-STAGE WORKFLOW (ZERO OMISSION):
     1. STAGE 1: Call with mode="text_only" and page_names="all" for global text scan
        - Purpose: Build god's view, understand structure, design grouping strategy
        - Output: Text only (fast)
        - ⚠️ IMPORTANT: After STAGE 1, MUST ask user to choose analysis_mode!
-    
+
     2. STAGE 2: Call with mode="full" for each group (output format varies by analysis_mode)
        - developer: Extract ALL details (fields, rules, flows) - for coding
        - tester: Extract test scenarios, validation points, field rules - for test cases
        - explorer: Extract core functions only (3-5 points) - for requirement review
-    
+
     3. STAGE 3: Reverse validation (format varies by analysis_mode)
-    
+
     4. STAGE 4: Generate deliverable (format varies by analysis_mode)
        - developer: Detailed requirement doc + global flowchart
        - tester: Test plan + test case list + field validation table
        - explorer: Review PPT-style doc + module table + dependency diagram
-    
+
     Returns:
         - mode="text_only": Text content only (for fast global scan)
         - mode="full": Visual + text + design style info (format determined by analysis_mode)
@@ -4605,7 +4618,7 @@ async def lanhu_get_ai_analyze_page_result(
         if project_id:
             store = MessageStore(project_id)
             store.record_collaborator(user_name, user_role)
-        
+
         # 解析URL获取文档ID
         params = extractor.parse_url(url)
         doc_id = params['doc_id']
@@ -4682,10 +4695,10 @@ async def lanhu_get_ai_analyze_page_result(
         # 根据mode决定输出格式
         is_text_only = (mode == "text_only")
         mode_indicator = "📝 TEXT_ONLY MODE" if is_text_only else "📸 FULL MODE"
-        
+
         header_text = f"{cache_hint} {mode_indicator} | Version: {download_result['version_id'][:8]}...\n"
         header_text += f"📊 Total {summary['successful']}/{summary['total_requested']} pages\n\n"
-        
+
         if is_text_only:
             # TEXT_ONLY模式的提示（STAGE 1全局扫描）
             header_text += "=" * 60 + "\n"
@@ -4707,7 +4720,7 @@ async def lanhu_get_ai_analyze_page_result(
             # FULL模式的提示（STAGE 2详细分析）
             # 获取分析模式对应的 prompt
             mode_prompts = _get_analysis_mode_prompt(analysis_mode)
-            
+
             header_text += "=" * 60 + "\n"
             header_text += f"🤖 STAGE 2 分析模式：【{mode_prompts['mode_name']}】\n"
             header_text += f"📋 {mode_prompts['mode_desc']}\n"
@@ -4719,7 +4732,7 @@ async def lanhu_get_ai_analyze_page_result(
             header_text += "  • 每页附带 [设计样式参考]，包含精确的颜色值、字体规格、图片资源\n"
             header_text += "  • 生成代码时必须使用 [设计样式参考] 中的精确值，禁止凭空编造颜色/字号\n"
             header_text += "  • 页面图片资源已标注本地路径，生成代码时直接引用本地文件\n\n"
-            
+
             # 添加当前分析模式的 Stage 2 prompt
             header_text += "=" * 60 + "\n"
             header_text += f"🐕 二狗工作指引（{mode_prompts['mode_name']}）\n"
@@ -4727,7 +4740,7 @@ async def lanhu_get_ai_analyze_page_result(
             header_text += "分析完本组页面后，必须按以下格式输出：\n"
             header_text += mode_prompts['stage2_prompt']
             header_text += "\n" + "=" * 60 + "\n"
-            
+
             # 添加 Stage 4 输出提示（供 AI 记住）
             header_text += "\n📝 提醒：STAGE 4 交付物格式（完成所有分组后使用）：\n"
             header_text += mode_prompts['stage4_prompt']
@@ -4752,7 +4765,7 @@ async def lanhu_get_ai_analyze_page_result(
             header_text += f"  • ... Total {len(success_results)} pages, and so on\n"
         header_text += "\n💡 Please match visual outputs above with text below to understand each page's requirements\n"
         header_text += "=" * 60 + "\n"
-        
+
         # 如果是首次查看完整文档（TEXT_ONLY模式），添加STAGE1的工作指引
         if isinstance(page_names, str) and page_names.lower() == 'all' and is_text_only:
             header_text += "\n" + "🐕 " + "=" * 58 + "\n"
@@ -4771,7 +4784,7 @@ async def lanhu_get_ai_analyze_page_result(
             # 根据用户角色生成推荐的分析模式选项
             user_name_local, user_role_local = get_user_info(ctx) if ctx else ('匿名', '未知')
             mode_options_local = _get_analysis_mode_options_by_role(user_role_local)
-            
+
             header_text += "全部页面已浏览完毕。\n\n"
             header_text += "📊 发现以下模块：\n"
             header_text += "[此处输出模块表格]\n\n"
@@ -4780,7 +4793,7 @@ async def lanhu_get_ai_analyze_page_result(
             header_text += '也可以自定义需求，比如"简单看看"、"只看数据流向"等。\n\n'
             header_text += "⚠️ 请告知您的选择，以便继续分析工作。\n"
             header_text += "=" * 60 + "\n"
-        
+
         content.append(header_text)
 
         # 根据mode决定是否添加截图
@@ -4900,13 +4913,13 @@ async def lanhu_get_designs(
 ) -> dict:
     """
     [UI Design] Get Lanhu UI design image list - CALL THIS FIRST before analyzing designs
-    
+
     USE THIS WHEN user says: UI设计图, 设计图, 设计稿, 视觉设计, UI稿, 看看设计, 帮我看设计图, 设计评审
     DO NOT USE for: 需求文档, PRD, 原型, 交互稿, Axure (use lanhu_get_pages instead)
     DO NOT USE for: 切图, 图标, 素材 (use lanhu_get_design_slices instead)
-    
+
     Purpose: Get list of UI design images from designers. Must call this BEFORE lanhu_get_ai_analyze_design_result.
-    
+
     Returns:
         Design image list and project metadata
     """
@@ -4918,9 +4931,9 @@ async def lanhu_get_designs(
         if project_id:
             store = MessageStore(project_id)
             store.record_collaborator(user_name, user_role)
-        
+
         result = await _get_designs_internal(extractor, url)
-        
+
         # Add AI suggestion when there are many designs (>8)
         if result['status'] == 'success':
             total_designs = result.get('total_designs', 0)
@@ -4931,7 +4944,7 @@ async def lanhu_get_designs(
                     'user_prompt_template': f'该项目包含 {total_designs} 个设计图。请选择：\n1. 下载全部 {total_designs} 个设计图（完整查看所有UI）\n2. 下载关键设计图（请指定需要的设计图）',
                     'language_note': 'Respond in Chinese when talking to user'
                 }
-        
+
         return result
     finally:
         await extractor.close()
@@ -4945,18 +4958,18 @@ async def lanhu_get_ai_analyze_design_result(
 ) -> List[Union[str, Image]]:
     """
     [UI Design] Analyze Lanhu UI design images - GET VISUAL CONTENT + HTML CODE
-    
+
     USE THIS WHEN user says: UI设计图, 设计图, 设计稿, 视觉设计, UI稿, 看看设计, 帮我看设计图, 设计评审
     DO NOT USE for: 需求文档, PRD, 原型, 交互稿, Axure (use lanhu_get_ai_analyze_page_result instead)
     DO NOT USE for: 切图, 图标, 素材 (use lanhu_get_design_slices instead)
-    
+
     WORKFLOW: First call lanhu_get_designs to get design list, then call this to analyze specific designs.
-    
+
     Returns:
         Visual representation of UI design images AND HTML+CSS code for each design.
         First block: summary text with "设计图 1/2/3..." and each design's HTML code.
         Following blocks: images in the same order as 设计图 1, 2, 3... (image N = design N).
-        
+
     CRITICAL - How to use the returned HTML+CSS (MUST follow this workflow):
 
         ⚠️ AUTHORITY PRIORITY (highest → lowest):
@@ -5074,7 +5087,7 @@ async def lanhu_get_ai_analyze_design_result(
         if project_id:
             store = MessageStore(project_id)
             store.record_collaborator(user_name, user_role)
-        
+
         # 解析URL获取参数
         params = extractor.parse_url(url)
 
@@ -5137,7 +5150,7 @@ async def lanhu_get_ai_analyze_design_result(
         # 下载设计图并生成HTML
         image_results = []
         html_results = []
-        
+
         for design in target_designs:
             # ===== 1. 下载图片 =====
             try:
@@ -5167,29 +5180,29 @@ async def lanhu_get_ai_analyze_design_result(
                     'design_name': design['name'],
                     'error': str(e)
                 })
-            
+
             # ===== 2. 获取Schema并生成HTML =====
             try:
                 # 获取设计图Schema JSON
                 schema_json = await extractor.get_design_schema_json(
-                    design['id'], 
-                    params['team_id'], 
+                    design['id'],
+                    params['team_id'],
                     params['project_id']
                 )
-                
+
                 # 转换为 HTML 并压缩（与 TS 端一致，减少 token）
                 html_code = minify_html(convert_lanhu_to_html(schema_json))
-                
+
                 # 远程图片 URL 替换为本地路径，生成下载映射表
                 html_code, image_url_mapping = _localize_image_urls(html_code, design['name'])
-                
+
                 # 保存HTML文件
                 html_filename = f"{design['name']}.html"
                 html_filepath = output_dir / html_filename
-                
+
                 with open(html_filepath, 'w', encoding='utf-8') as f:
                     f.write(html_code)
-                
+
                 html_results.append({
                     'success': True,
                     'design_name': design['name'],
@@ -5350,11 +5363,11 @@ async def lanhu_get_ai_analyze_design_result(
         summary_text += "  flex-col = Column 方向布局    flex-row = Row 方向布局\n"
         summary_text += "  justify-between/center/start/end/around/evenly = 主轴对齐\n"
         summary_text += "  align-start/center/end = 交叉轴对齐\n\n"
-        
+
         success_image_results = [r for r in image_results if r['success']]
         success_html_results = {r['design_name']: r for r in html_results if r['success']}
         failed_html_by_name = {r['design_name']: r for r in html_results if not r['success']}
-        
+
         for idx, img_r in enumerate(success_image_results, 1):
             summary_text += f"\n--- 设计图 {idx}：{img_r['design_name']} ---\n"
 
@@ -5446,12 +5459,12 @@ async def lanhu_get_ai_analyze_design_result(
             r for r in html_results
             if not r['success'] and not r.get('sketch_html') and not r.get('sketch_annotations')
         ]
-        
+
         if failed_image_results:
             summary_text += f"\n⚠️ Failed to download {len(failed_image_results)} images:\n"
             for r in failed_image_results:
                 summary_text += f"  ✗ {r['design_name']}: {r.get('error', 'Unknown')}\n"
-        
+
         if failed_html_results:
             summary_text += f"\n⚠️ Failed to generate {len(failed_html_results)} HTML codes (no fallback available):\n"
             for r in failed_html_results:
@@ -5478,13 +5491,13 @@ async def lanhu_get_design_slices(
 ) -> dict:
     """
     [UI Slices/Assets] Get slice/asset info from Lanhu design for download
-    
+
     USE THIS WHEN user says: 切图, 下载切图, 图标, icon, 素材, 资源, 导出切图, 下载素材, 获取图标
     DO NOT USE for: 需求文档, PRD, 原型 (use lanhu_get_pages instead)
     DO NOT USE for: 看设计图, 设计评审 (use lanhu_get_designs instead)
-    
+
     WORKFLOW: First call lanhu_get_designs to get design list, then call this to get slices from specific design.
-    
+
     Returns:
         Slice list with download URLs, AI will handle smart naming and batch download
     """
@@ -5496,7 +5509,7 @@ async def lanhu_get_design_slices(
         if project_id:
             store = MessageStore(project_id)
             store.record_collaborator(user_name, user_role)
-        
+
         # 1. 获取设计图列表
         designs_data = await _get_designs_internal(extractor, url)
 
@@ -5771,16 +5784,16 @@ async def lanhu_say(
 ) -> dict:
     """
     Post message to team message board
-    
+
     USE THIS WHEN user says: 有话说, 留言, 发消息, 通知团队, 告诉xxx, @张三, @李四, 共享给xxx, 分享给xxx, 发给xxx, 写给xxx, 转发给xxx
-    
+
     Message type description:
     - normal: Normal message/notification (default)
     - task: Query task - Only for query operations (query code, query database, query TODO, etc.), NO code modification
     - question: Question message - Needs answer from others
     - urgent: Urgent message - Needs immediate attention
     - knowledge: Knowledge base - Long-term preserved experience, pitfalls, notes, best practices
-    
+
     Security restrictions:
     task type can only be used for query operations, including:
     - Query code location, code logic
@@ -5788,30 +5801,30 @@ async def lanhu_say(
     - Query test methods, test coverage
     - Query TODO, comments
     - Forbidden: Modify code, delete files, execute commands, commit code
-    
+
     Knowledge use cases:
     - Pitfalls encountered and solutions
     - Testing notes
     - Development experience and best practices
     - Common FAQ
     - Technical decision records
-    
+
     Purpose: Post message to project message board, can @ specific person to send Feishu notification
-    
+
     Returns:
         Post result, including message ID and details
     """
     # 获取用户信息
     user_name, user_role = get_user_info(ctx) if ctx else ('匿名', '未知')
-    
+
     # 获取project_id
     project_id = get_project_id_from_url(url)
     if not project_id:
         return {"status": "error", "message": "无法从URL解析project_id"}
-    
+
     # 获取元数据（自动，带缓存）
     metadata = await _fetch_metadata_from_url(url)
-    
+
     # 验证message_type
     valid_types = ['normal', 'task', 'question', 'urgent', 'knowledge']
     if message_type and message_type not in valid_types:
@@ -5820,32 +5833,32 @@ async def lanhu_say(
             "message": f"无效的留言类型: {message_type}",
             "valid_types": valid_types
         }
-    
+
     # 默认为normal
     if not message_type:
         message_type = 'normal'
-    
+
     # 验证mentions（只能@具体人名）
     if mentions:
         invalid_names = [name for name in mentions if name not in MENTION_ROLES]
         if invalid_names:
             return {
-                "status": "error", 
+                "status": "error",
                 "message": f"无效的人名: {invalid_names}。只能@具体人名，不能使用角色名！",
                 "valid_names": MENTION_ROLES
             }
-    
+
     # 保存消息
     store = MessageStore(project_id)
     store.record_collaborator(user_name, user_role)
-    
+
     # 保存项目元数据到store（如果首次获取到）
     if metadata.get('project_name') and not store._data.get('project_name'):
         store._data['project_name'] = metadata['project_name']
     if metadata.get('folder_name') and not store._data.get('folder_name'):
         store._data['folder_name'] = metadata['folder_name']
     store._save()
-    
+
     message = store.save_message(
         summary=summary,
         content=content,
@@ -5863,7 +5876,7 @@ async def lanhu_say(
         doc_updated_at=metadata.get('doc_updated_at'),
         doc_url=metadata.get('doc_url')
     )
-    
+
     # 发送飞书通知（无论是否@人都发送）
     try:
         await send_feishu_notification(
@@ -5880,7 +5893,7 @@ async def lanhu_say(
     except Exception as e:
         # 飞书通知失败不影响留言发布
         print(f"⚠️ 飞书通知发送失败（不影响留言发布）: {e}")
-    
+
     return {
         "status": "success",
         "message": "留言发布成功",
@@ -5916,33 +5929,33 @@ async def lanhu_say_list(
 ) -> dict:
     """
     Get message list with filtering and search
-    
+
     USE THIS WHEN user says: 查看留言, 有什么消息, 谁@我了, 留言列表, 消息列表
-    
+
     Supports two modes:
     1. Provide specific URL: Query messages in that project
     2. url='all' or url=None: Query messages in all projects (global mode)
-    
+
     Important: To prevent AI context overflow, it is recommended:
     1. Use filter_type to filter by type
     2. Use search_regex for further filtering (regex, AI can generate itself)
     3. Use limit to limit the number of returned messages
     4. Unless user explicitly requests "view all", filters must be used
-    
+
     Example:
     - Query all knowledge: filter_type="knowledge"
     - Search containing "test" or "refund": search_regex="test|refund"
     - Query tasks and containing "database": filter_type="task", search_regex="database"
     - Limit to 10 latest: limit=10
-    
+
     Purpose: Get message board message summary list, supports type filtering, regex search and quantity limit
-    
+
     Returns:
         Message list, including mentions_me count
     """
     # 获取用户信息
     user_name, user_role = get_user_info(ctx) if ctx else ('匿名', '未知')
-    
+
     # 验证filter_type
     if filter_type:
         valid_types = ['normal', 'task', 'question', 'urgent', 'knowledge']
@@ -5952,7 +5965,7 @@ async def lanhu_say_list(
                 "message": f"无效的类型: {filter_type}",
                 "valid_types": valid_types
             }
-    
+
     # 编译正则表达式（如果提供）
     import re
     regex_pattern = None
@@ -5965,7 +5978,7 @@ async def lanhu_say_list(
                 "message": f"无效的正则表达式: {search_regex}",
                 "error": str(e)
             }
-    
+
     # 处理limit参数 - 自动转换为整数
     if limit is not None:
         try:
@@ -5974,31 +5987,31 @@ async def lanhu_say_list(
                 return {"status": "error", "message": "limit 必须是正整数"}
         except (ValueError, TypeError):
             return {"status": "error", "message": f"limit 类型错误，期望整数，实际类型: {type(limit).__name__}"}
-    
+
     # 全局查询模式
     if not url or url.lower() == 'all':
         store = MessageStore(project_id=None)
         groups = store.get_all_messages_grouped(user_role=user_role, user_name=user_name)
-        
+
         # 应用筛选和搜索
         filtered_groups = []
         total_messages_before_filter = sum(g['message_count'] for g in groups)
-        
+
         for group in groups:
             filtered_messages = []
             for msg in group['messages']:
                 # 类型筛选
                 if filter_type and msg.get('message_type') != filter_type:
                     continue
-                
+
                 # 正则搜索
                 if regex_pattern:
                     text = f"{msg.get('summary', '')} {msg.get('content', '')}"
                     if not regex_pattern.search(text):
                         continue
-                
+
                 filtered_messages.append(msg)
-            
+
             # 如果该组有匹配的消息
             if filtered_messages:
                 group_copy = group.copy()
@@ -6006,7 +6019,7 @@ async def lanhu_say_list(
                 group_copy['message_count'] = len(filtered_messages)
                 group_copy['mentions_me_count'] = sum(1 for m in filtered_messages if m.get('mentions_me'))
                 filtered_groups.append(group_copy)
-        
+
         # 应用limit（限制消息总数）
         if limit and limit > 0:
             limited_groups = []
@@ -6020,17 +6033,17 @@ async def lanhu_say_list(
                 limited_groups.append(group_copy)
                 remaining_limit -= group_copy['message_count']
             filtered_groups = limited_groups
-        
+
         # 统计
         total_messages = sum(g['message_count'] for g in filtered_groups)
         total_mentions_me = sum(g['mentions_me_count'] for g in filtered_groups)
         total_projects = len(set(g.get('project_id') for g in filtered_groups if g.get('project_id')))
-        
+
         # 检查是否需要警告（无筛选且消息过多）
         warning_message = None
         if not filter_type and not search_regex and not limit and total_messages_before_filter > 100:
             warning_message = f"⚠️ 发现{total_messages_before_filter}条留言，建议使用筛选条件避免上下文溢出。使用 filter_type 或 search_regex 或 limit 参数"
-        
+
         result = {
             "status": "success",
             "mode": "global",
@@ -6041,10 +6054,10 @@ async def lanhu_say_list(
             "mentions_me_count": total_mentions_me,
             "groups": filtered_groups
         }
-        
+
         if warning_message:
             result["warning"] = warning_message
-        
+
         if filter_type or search_regex:
             result["filter_info"] = {
                 "filter_type": filter_type,
@@ -6052,51 +6065,51 @@ async def lanhu_say_list(
                 "total_before_filter": total_messages_before_filter,
                 "total_after_filter": total_messages
             }
-        
+
         return result
-    
+
     # 单项目查询模式
     project_id = get_project_id_from_url(url)
     if not project_id:
         return {"status": "error", "message": "无法从URL解析project_id"}
-    
+
     # 获取消息列表
     store = MessageStore(project_id)
     store.record_collaborator(user_name, user_role)
     messages = store.get_messages(user_role=user_role)
-    
+
     # 应用筛选和搜索
     total_messages_before_filter = len(messages)
     filtered_messages = []
-    
+
     for msg in messages:
         # 类型筛选
         if filter_type and msg.get('message_type') != filter_type:
             continue
-        
+
         # 正则搜索
         if regex_pattern:
             text = f"{msg.get('summary', '')} {msg.get('content', '')}"
             if not regex_pattern.search(text):
                 continue
-        
+
         filtered_messages.append(msg)
-    
+
     # 应用limit
     if limit and limit > 0:
         filtered_messages = filtered_messages[:limit]
-    
+
     # 统计@自己的消息数
     mentions_me_count = sum(1 for msg in filtered_messages if msg.get("mentions_me"))
-    
+
     # 按文档分组（减少token）
     from collections import defaultdict
     groups_dict = defaultdict(list)
-    
+
     for msg in filtered_messages:
         doc_id = msg.get('doc_id', 'no_doc')
         groups_dict[doc_id].append(msg)
-    
+
     # 构建分组结果
     groups = []
     meta_fields = {
@@ -6104,14 +6117,14 @@ async def lanhu_say_list(
         'doc_id', 'doc_name', 'doc_type', 'doc_version',
         'doc_updated_at', 'doc_url'
     }
-    
+
     for doc_id, doc_messages in groups_dict.items():
         if not doc_messages:
             continue
-        
+
         # 提取元数据（组内共享）
         first_msg = doc_messages[0]
-        
+
         group = {
             # 元数据（只出现一次）
             "doc_id": first_msg.get('doc_id'),
@@ -6120,28 +6133,28 @@ async def lanhu_say_list(
             "doc_version": first_msg.get('doc_version'),
             "doc_updated_at": first_msg.get('doc_updated_at'),
             "doc_url": first_msg.get('doc_url'),
-            
+
             # 统计
             "message_count": len(doc_messages),
             "mentions_me_count": sum(1 for m in doc_messages if m.get("mentions_me")),
-            
+
             # 精简消息列表（移除元数据）
             "messages": [_clean_message_dict({k: v for k, v in m.items() if k not in meta_fields}, user_name) for m in doc_messages]
         }
-        
+
         groups.append(group)
-    
+
     # 按组内最新消息时间排序
     groups.sort(
         key=lambda g: max((m.get('created_at', '') for m in g['messages']), default=''),
         reverse=True
     )
-    
+
     # 检查是否需要警告
     warning_message = None
     if not filter_type and not search_regex and not limit and total_messages_before_filter > 50:
         warning_message = f"⚠️ 该项目有{total_messages_before_filter}条留言，建议使用筛选条件避免上下文溢出"
-    
+
     result = {
         "status": "success",
         "mode": "single_project",
@@ -6154,10 +6167,10 @@ async def lanhu_say_list(
         "mentions_me_count": mentions_me_count,
         "groups": groups
     }
-    
+
     if warning_message:
         result["warning"] = warning_message
-    
+
     if filter_type or search_regex:
         result["filter_info"] = {
             "filter_type": filter_type,
@@ -6165,7 +6178,7 @@ async def lanhu_say_list(
             "total_before_filter": total_messages_before_filter,
             "total_after_filter": len(filtered_messages)
         }
-    
+
     return result
 
 
@@ -6178,21 +6191,21 @@ async def lanhu_say_detail(
 ) -> dict:
     """
     Get message detail (supports batch query)
-    
+
     USE THIS WHEN user says: 查看详情, 看看内容, 详细内容, 消息详情
-    
+
     Two modes:
     1. Provide url: Parse project_id from url, query messages in that project
     2. url='all'/None + project_id: Global mode, need to manually specify project_id
-    
+
     Purpose: Get full content of messages by message ID
-    
+
     Returns:
         Message detail list with full content
     """
     # 获取用户信息
     user_name, user_role = get_user_info(ctx) if ctx else ('匿名', '未知')
-    
+
     # 确定project_id
     if url and url.lower() != 'all':
         target_project_id = get_project_id_from_url(url)
@@ -6200,10 +6213,10 @@ async def lanhu_say_detail(
         target_project_id = project_id
     else:
         return {"status": "error", "message": "请提供url或project_id"}
-    
+
     if not target_project_id:
         return {"status": "error", "message": "无法获取project_id"}
-    
+
     # 处理message_ids参数 - 自动转换单个数字为数组
     if isinstance(message_ids, (int, float)):
         message_ids = [int(message_ids)]
@@ -6215,21 +6228,21 @@ async def lanhu_say_detail(
             return {"status": "error", "message": "message_ids 必须是整数或整数数组"}
     else:
         return {"status": "error", "message": f"message_ids 类型错误，期望整数或数组，实际类型: {type(message_ids).__name__}"}
-    
+
     # 获取消息详情
     store = MessageStore(target_project_id)
     store.record_collaborator(user_name, user_role)
-    
+
     messages = []
     not_found = []
-    
+
     for msg_id in message_ids:
         msg = store.get_message_by_id(msg_id, user_role=user_role)
         if msg:
             messages.append(msg)
         else:
             not_found.append(msg_id)
-    
+
     return {
         "status": "success",
         "total": len(messages),
@@ -6249,46 +6262,46 @@ async def lanhu_say_edit(
 ) -> dict:
     """
     Edit message
-    
+
     USE THIS WHEN user says: 编辑留言, 修改消息, 更新内容
-    
+
     Purpose: Edit published message, will record editor and edit time
-    
+
     Returns:
         Updated message details
     """
     # 获取用户信息
     user_name, user_role = get_user_info(ctx) if ctx else ('匿名', '未知')
-    
+
     # 获取project_id
     project_id = get_project_id_from_url(url)
     if not project_id:
         return {"status": "error", "message": "无法从URL解析project_id"}
-    
+
     # 处理message_id参数 - 自动转换为整数
     try:
         message_id = int(message_id)
     except (ValueError, TypeError):
         return {"status": "error", "message": f"message_id 类型错误，期望整数，实际类型: {type(message_id).__name__}"}
-    
+
     # 验证mentions（只能@具体人名）
     if mentions:
         invalid_names = [name for name in mentions if name not in MENTION_ROLES]
         if invalid_names:
             return {
-                "status": "error", 
+                "status": "error",
                 "message": f"无效的人名: {invalid_names}。只能@具体人名，不能使用角色名！",
                 "valid_names": MENTION_ROLES
             }
-    
+
     # 检查是否有更新内容
     if summary is None and content is None and mentions is None:
         return {"status": "error", "message": "请至少提供一个要更新的字段"}
-    
+
     # 更新消息
     store = MessageStore(project_id)
     store.record_collaborator(user_name, user_role)
-    
+
     updated_msg = store.update_message(
         msg_id=message_id,
         editor_name=user_name,
@@ -6297,15 +6310,15 @@ async def lanhu_say_edit(
         content=content,
         mentions=mentions
     )
-    
+
     if not updated_msg:
         return {"status": "error", "message": "消息不存在", "message_id": message_id}
-    
+
     # 发送飞书编辑通知
     try:
         # 获取元数据
         metadata = await _fetch_metadata_from_url(url)
-        
+
         await send_feishu_notification(
             summary=f"🔄 [已编辑] {updated_msg.get('summary', '')}",
             content=updated_msg.get('content', ''),
@@ -6319,7 +6332,7 @@ async def lanhu_say_edit(
         )
     except Exception as e:
         print(f"⚠️ 飞书编辑通知发送失败（不影响编辑）: {e}")
-    
+
     return {
         "status": "success",
         "message": "消息更新成功",
@@ -6335,37 +6348,37 @@ async def lanhu_say_delete(
 ) -> dict:
     """
     Delete message
-    
+
     USE THIS WHEN user says: 删除留言, 删除消息, 移除
-    
+
     Purpose: Delete published message
-    
+
     Returns:
         Delete result
     """
     # 获取用户信息
     user_name, user_role = get_user_info(ctx) if ctx else ('匿名', '未知')
-    
+
     # 获取project_id
     project_id = get_project_id_from_url(url)
     if not project_id:
         return {"status": "error", "message": "无法从URL解析project_id"}
-    
+
     # 处理message_id参数 - 自动转换为整数
     try:
         message_id = int(message_id)
     except (ValueError, TypeError):
         return {"status": "error", "message": f"message_id 类型错误，期望整数，实际类型: {type(message_id).__name__}"}
-    
+
     # 删除消息
     store = MessageStore(project_id)
     store.record_collaborator(user_name, user_role)
-    
+
     success = store.delete_message(message_id)
-    
+
     if not success:
         return {"status": "error", "message": "消息不存在", "message_id": message_id}
-    
+
     return {
         "status": "success",
         "message": "消息删除成功",
@@ -6382,27 +6395,27 @@ async def lanhu_get_members(
 ) -> dict:
     """
     Get project collaborators list
-    
+
     USE THIS WHEN user says: 谁参与了, 协作者, 团队成员, 有哪些人
-    
+
     Purpose: Get list of team members who have used Lanhu MCP tools to access this project
-    
+
     Returns:
         Collaborator list with first and last access time
     """
     # 获取用户信息
     user_name, user_role = get_user_info(ctx) if ctx else ('匿名', '未知')
-    
+
     # 获取project_id
     project_id = get_project_id_from_url(url)
     if not project_id:
         return {"status": "error", "message": "无法从URL解析project_id"}
-    
+
     # 获取协作者列表
     store = MessageStore(project_id)
     store.record_collaborator(user_name, user_role)
     collaborators = store.get_collaborators()
-    
+
     return {
         "status": "success",
         "project_id": project_id,
@@ -6411,17 +6424,18 @@ async def lanhu_get_members(
     }
 
 
-@mcp.custom_route("/health", methods=["GET"])
-async def health_check(request):
-    from starlette.responses import JSONResponse
-    return JSONResponse({"status": "ok"})
+def main() -> None:
+    """启动 MCP 服务，默认使用 HBuilder X 可直连的 HTTP 传输。"""
+    server_host = os.getenv("SERVER_HOST", "0.0.0.0")
+    server_port = int(os.getenv("SERVER_PORT", "8000"))
+    transport = os.getenv("MCP_TRANSPORT", "http").strip().lower() or "http"
+
+    if transport == "stdio":
+        mcp.run(transport="stdio")
+        return
+
+    mcp.run(transport="http", path="/mcp", host=server_host, port=server_port)
 
 
 if __name__ == "__main__":
-    # 运行MCP服务器
-    # 使用HTTP传输方式，支持环境变量配置
-    SERVER_HOST = os.getenv("SERVER_HOST", "0.0.0.0")
-    SERVER_PORT = int(os.getenv("SERVER_PORT", "8000"))
-    mcp.run(transport="http", path="/mcp", host=SERVER_HOST, port=SERVER_PORT)
-
-
+    main()
